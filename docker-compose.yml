@@ -1,0 +1,11 @@
+services:
+  ner-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # 生产环境务必替换为强随机 Key（逗号分隔可配置多个）
+      DESENTI_API_KEYS: "${DESENTI_API_KEYS:-change-me-in-production}"
+      DESENTI_MODEL_VERSION: "1.0.0"
+      DESENTI_RATE_LIMIT_PER_MINUTE: "600"
+    restart: unless-stopped
