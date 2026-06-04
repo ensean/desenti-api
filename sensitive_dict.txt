@@ -1,0 +1,19 @@
+# 敏感词典 —— 命中优先级最高，可强制匹配或纠正规则/模型的错误切分。
+# 用法：
+#   [GROUP] 段头指定该段词条的实体类型（见下方可用类型）
+#   每行一个词条，精确匹配，英文忽略大小写
+#   # 注释与空行忽略；保存后热更新，无需重启
+#
+# 可用类型（GROUP）：company_name / person_name / address / bank_name
+#   credit_code / phone / email / bank_account / account_name / id_card
+#   也可用参考项目的别名：CN_COMPANY / PERSON / CN_ADDRESS / CN_BANK_NAME ...
+
+[company_name]
+# 示例：含「银行」的公司全称，作为整体匹配，避免被 bank_name 正则切成两段
+深圳前海微众银行股份有限公司
+
+[person_name]
+# 在此登记需强制识别的特定人名（如化名、外籍名）
+
+[address]
+# 在此登记需强制识别的特定地址

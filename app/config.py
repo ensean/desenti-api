@@ -35,8 +35,21 @@ class Settings(BaseSettings):
     # NER 默认参数
     default_min_confidence: float = 0.7
     default_context_window: int = 100
-    # 默认识别模式：fast=纯规则；accurate=规则 + LLM
+    # 默认识别模式：fast=字典+正则+spaCy；accurate=fast + LLM
     default_mode: str = "fast"
+
+    # ---------------- fast 模式：字典 + spaCy ----------------
+    # 敏感词典文件路径（相对启动目录）。命中优先级最高，可强制匹配/纠正实体。
+    dict_file: str = "sensitive_dict.txt"
+    # 是否启用 spaCy NER（公司名/人名/地址兜底）。
+    # 关闭或模型不可用时，fast 模式自动降级为「字典 + 正则」。
+    spacy_enabled: bool = True
+    # spaCy 中文模型名。生产推荐 zh_core_web_trf（~400MB BERT，需 torch）；
+    # 轻量集成可用 zh_core_web_sm。可用环境变量 DESENTI_SPACY_MODEL 覆盖，
+    # 内网可指向本地模型目录路径。
+    spacy_model: str = "zh_core_web_trf"
+    # spaCy 实体置信度（模型不显式给分，统一赋值）。
+    spacy_confidence: float = 0.75
 
     # ---------------- LLM 后端（accurate 模式） ----------------
     # 是否启用 LLM 后端。关闭时 accurate 模式自动降级为 fast。

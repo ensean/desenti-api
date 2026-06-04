@@ -1,0 +1,15 @@
+# fast 模式的 spaCy NER 后端（可选）。
+# 安装后 fast 模式会用 spaCy 补充公司名/人名/地址识别；
+# 不安装则 fast 自动降级为「字典 + 正则」，服务照常运行。
+#
+# 安装：
+#   pip install -r requirements-nlp.txt
+#   生产（高精度，~400MB BERT，需 torch）：
+#       python -m spacy download zh_core_web_trf
+#   轻量（无需 torch，精度较低）：
+#       python -m spacy download zh_core_web_sm
+#
+# 内网无法联网时，可用环境变量指向本地模型目录：
+#   export DESENTI_SPACY_MODEL=/opt/models/zh_core_web_trf-3.8.0
+
+spacy>=3.7,<3.9

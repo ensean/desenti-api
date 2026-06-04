@@ -6,12 +6,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 先装依赖，利用层缓存
+# 先装基础依赖，利用层缓存
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制应用代码
+# 可选：构建时装入 spaCy NER 后端（fast 模式的公司/人名/地址兜底）。
+#   docker build --build-arg WITH_SPACY=1 --build-arg SPACY_MODEL=zh_core_web_trf .
+# 默认 WITH_SPACY=0：镜像轻量，fast 模式降级为「字典 + 正则」。
+# 注意：zh_core_web_trf 约 400MB（含 torch），镜像会显著变大、构建较久。
+ARG WITH_SPACY=0
+ARG SPACY_MODEL=zh_core_web_trf
+COPY requirements-nlp.txt .
+RUN if [ "$WITH_SPACY" = "1" ]; then \
+        pip install --no-cache-dir -r requirements-nlp.txt && \
+        python -m spacy download "$SPACY_MODEL" ; \
+    fi
+ENV DESENTI_SPACY_MODEL=${SPACY_MODEL}
+
+# 复制应用代码与词典
 COPY app ./app
+COPY sensitive_dict.txt ./sensitive_dict.txt
 
 # 以非 root 用户运行
 RUN useradd --create-home --uid 10001 appuser

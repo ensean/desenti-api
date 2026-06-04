@@ -1,16 +1,18 @@
 """混合 NER 引擎。
 
 两种模式：
-  - fast（默认）：纯规则，毫秒级、确定、零模型依赖。
-  - accurate：规则 + 自托管 LLM（EC2 host）。
+  - fast（默认）：字典 + 正则 + spaCy NER（参考 contract-mask-with-nlp）。
+  - accurate：fast + 自托管 LLM（EC2 host）。
+
+fast 模式识别优先级（高 -> 低，高优先级覆盖重叠的低优先级）：
+  词典 > 字段锚定正则 > 强格式/通用正则 > spaCy NER
 
 职责划分：
-  - 强格式实体（信用代码/身份证/手机/邮箱/银行账号）：始终走正则 + 校验，
-    偏移精确、确定，LLM 在此反而更差。
-  - 语义实体（公司名/人名/地址）：fast 用规则锚点；accurate 额外用 LLM
-    提升召回。LLM 只返回实体「值」，字符偏移由本引擎在原文回填，
-    角色/字段优先用基于位置的规则判定，规则判不出时回退到 LLM 的判定。
-  - LLM 不可用（超时/连接失败/解析失败）时自动降级为纯规则，请求不失败。
+  - 字典：已知实体强制匹配，可纠正规则/模型的错误切分。
+  - 强格式实体（信用代码/身份证/手机/邮箱/银行账号）：正则 + 校验，偏移精确。
+  - 公司名/人名/地址：正则锚点 + spaCy NER 兜底；accurate 模式再叠加 LLM。
+  - spaCy 模型不可用时 fast 自动降级为「字典 + 正则」。
+  - LLM 不可用时 accurate 自动降级为 fast。
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ import re
 from dataclasses import dataclass
 
 from . import patterns as P
+from .dict_engine import SensitiveDict
 from .llm_client import LlmClient, LlmUnavailable
+from .spacy_backend import SpacyBackend
 from .validators import validate_credit_code, validate_id_card
 
 logger = logging.getLogger("desenti.engine")
@@ -39,6 +43,22 @@ _PRIORITY = {
     "person_name": 50,
 }
 
+# 来源优先级（数值越大越优先保留）。重叠裁决先比来源，再比类型/跨度/置信度。
+#   dict          词典强制匹配，最高（可纠正错误切分，如含「银行」的公司全称）
+#   anchor        字段锚定（“法定代表人：”等），精确
+#   regex_strong  强格式正则（信用代码/身份证/手机/邮箱/银行账号/开户行），权威
+#   llm           LLM 语义实体（accurate）
+#   spacy         spaCy NER 语义实体
+#   regex_fallback 公司/地址的正则兜底，最弱（易过度捕获，让位于 spaCy/LLM 的干净跨度）
+_SOURCE_PRIORITY = {
+    "dict": 5,
+    "anchor": 4,
+    "regex_strong": 3,
+    "llm": 2,
+    "spacy": 1,
+    "regex_fallback": 0,
+}
+
 _PUNCT = "：:（）()【】[]　 \t\u3000-、，,。;；"
 
 
@@ -49,17 +69,27 @@ class Candidate:
     start: int
     end: int
     confidence: float
-    # 来源："rule"（正则/锚点）或 "llm"
-    source: str = "rule"
+    # 来源：dict / anchor / regex_strong / regex_fallback / spacy / llm
+    source: str = "regex_strong"
     # LLM 提供的角色/字段，作为基于位置的规则判定失败时的回退
     llm_role: str | None = None
     llm_field: str | None = None
 
 
 class NerEngine:
-    def __init__(self, model_version: str = "1.0.0", llm_client: LlmClient | None = None):
+    def __init__(
+        self,
+        model_version: str = "1.0.0",
+        llm_client: LlmClient | None = None,
+        spacy_backend: SpacyBackend | None = None,
+        sensitive_dict: SensitiveDict | None = None,
+        spacy_confidence: float = 0.75,
+    ):
         self.model_version = model_version
         self.llm_client = llm_client
+        self.spacy_backend = spacy_backend
+        self.sensitive_dict = sensitive_dict
+        self.spacy_confidence = spacy_confidence
 
     # ------------------------------------------------------------------
     # 公开入口
@@ -80,8 +110,13 @@ class NerEngine:
         wanted = self._normalize_wanted(entity_types)
 
         candidates: list[Candidate] = []
+        # 1) 词典命中（最高优先级）
+        candidates += self._extract_dict_entities(text)
+        # 2) 字段锚定 + 强格式正则
         candidates += self._extract_regex_entities(text)
         candidates += self._extract_anchored_entities(text)
+        # 3) spaCy NER 兜底（公司/人名/地址）
+        candidates += self._extract_spacy_entities(text)
 
         used_mode = "fast"
         if mode == "accurate" and self.llm_client is not None:
@@ -171,20 +206,22 @@ class NerEngine:
             out.append(Candidate(raw.strip(), "bank_account",
                                   m.start(), m.start() + len(raw.rstrip()), 0.85))
 
-        # 公司名称
+        # 公司名称（正则兜底，最弱：易过度捕获，让位于 spaCy/LLM 的干净跨度）
         for m in P.COMPANY_RE.finditer(text):
-            out.append(Candidate(m.group(), "company_name", m.start(), m.end(), 0.9))
+            out.append(Candidate(m.group(), "company_name", m.start(), m.end(),
+                                 0.9, source="regex_fallback"))
 
-        # 开户行/银行名称
+        # 开户行/银行名称（强格式，较可靠）
         for m in P.BANK_NAME_RE.finditer(text):
             out.append(Candidate(m.group(), "bank_name", m.start(), m.end(), 0.9))
 
-        # 地址
+        # 地址（正则兜底，易过度捕获）
         for m in P.ADDRESS_RE.finditer(text):
             val = m.group()
             if len(val) < 6:
                 continue
-            out.append(Candidate(val, "address", m.start(), m.end(), 0.78))
+            out.append(Candidate(val, "address", m.start(), m.end(),
+                                 0.78, source="regex_fallback"))
 
         return out
 
@@ -203,7 +240,7 @@ class NerEngine:
                 if name:
                     start, val = name
                     out.append(Candidate(val, "person_name", start,
-                                         start + len(val), 0.88))
+                                         start + len(val), 0.88, source="anchor"))
 
         # 户名：在“户名/账户名称/开户名”后抽取（可能是公司名或人名）
         account_anchors = ["户名", "账户名称", "开户名", "开户名称"]
@@ -213,7 +250,7 @@ class NerEngine:
                 if val:
                     start, name = val
                     out.append(Candidate(name, "account_name", start,
-                                         start + len(name), 0.86))
+                                         start + len(name), 0.86, source="anchor"))
 
         return out
 
@@ -250,6 +287,46 @@ class NerEngine:
         if len(val) >= 2:
             return start, val
         return None
+
+    # ------------------------------------------------------------------
+    # 词典实体抽取（最高优先级）
+    # ------------------------------------------------------------------
+    def _extract_dict_entities(self, text: str) -> list[Candidate]:
+        if self.sensitive_dict is None:
+            return []
+        out: list[Candidate] = []
+        for hit in self.sensitive_dict.find_hits(text):
+            out.append(
+                Candidate(
+                    value=hit.term,
+                    type=hit.entity_type,
+                    start=hit.start,
+                    end=hit.end,
+                    confidence=0.99,
+                    source="dict",
+                )
+            )
+        return out
+
+    # ------------------------------------------------------------------
+    # spaCy NER 兜底（公司/人名/地址）
+    # ------------------------------------------------------------------
+    def _extract_spacy_entities(self, text: str) -> list[Candidate]:
+        if self.spacy_backend is None:
+            return []
+        out: list[Candidate] = []
+        for sp in self.spacy_backend.extract(text):
+            out.append(
+                Candidate(
+                    value=sp.value,
+                    type=sp.entity_type,
+                    start=sp.start,
+                    end=sp.end,
+                    confidence=self.spacy_confidence,
+                    source="spacy",
+                )
+            )
+        return out
 
     # ------------------------------------------------------------------
     # LLM 实体抽取（accurate 模式）+ 偏移回填
@@ -305,13 +382,13 @@ class NerEngine:
                 unique[key] = c
         items = list(unique.values())
 
-        # 排序：优先级 -> LLM 优先（语义类） -> 跨度长度 -> 置信度
-        # accurate 模式下 LLM 的语义实体跨度更干净（正则常过度捕获前缀），
-        # 故同优先级时优先保留 LLM 候选。
+        # 排序：来源优先级 -> 类型优先级 -> 跨度长度 -> 置信度。
+        # 来源优先于类型，使词典能纠正含「银行」的公司全称切分（词典 company_name
+        # 覆盖 regex bank_name），并让 spaCy/LLM 的干净语义跨度覆盖正则兜底的过度捕获。
         items.sort(
             key=lambda c: (
+                _SOURCE_PRIORITY.get(c.source, 0),
                 _PRIORITY.get(c.type, 0),
-                1 if c.source == "llm" else 0,
                 c.end - c.start,
                 c.confidence,
             ),
