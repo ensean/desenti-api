@@ -15,6 +15,7 @@ import logging
 import time
 
 from fastapi import Depends, FastAPI, Header, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import __version__
@@ -46,6 +47,18 @@ app = FastAPI(
     title="合同敏感信息识别 API",
     version=__version__,
     description="接收中文合同文本，返回识别到的敏感实体列表。",
+)
+
+# CORS：在所有情况下允许任意来源跨域（始终 "*"）。
+# 本服务用 Bearer 头鉴权（非 Cookie），故 allow_credentials=False，
+# 与 "*" 兼容；CORS 仅放开浏览器读取响应，不泄露 API Key。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=3600,
 )
 
 

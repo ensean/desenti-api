@@ -80,3 +80,31 @@ def test_entity_type_filter_api():
     assert r.status_code == 200
     types = {e["type"] for e in r.json()["data"]["entities"]}
     assert types <= {"phone"}
+
+
+def test_cors_preflight_options():
+    # 浏览器预检：OPTIONS 应被 CORS 中间件处理，返回允许头
+    r = client.options(
+        "/api/v1/contract/ner",
+        headers={
+            "Origin": "https://quick.example.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") in ("*", "https://quick.example.com")
+    allow_methods = r.headers.get("access-control-allow-methods", "")
+    assert "POST" in allow_methods
+
+
+def test_cors_actual_request_has_headers():
+    # 实际请求带 Origin 时，响应应含 Access-Control-Allow-Origin
+    body = {"text": "电话13800138000", "options": {"mode": "fast"}}
+    r = client.post(
+        "/api/v1/contract/ner",
+        json=body,
+        headers={**AUTH, "Origin": "https://quick.example.com"},
+    )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") in ("*", "https://quick.example.com")
