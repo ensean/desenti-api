@@ -28,6 +28,7 @@ from .errors import (
     TextTooLongError,
 )
 from .ner import NerEngine
+from .ner.llm_client import LlmClient
 from .schemas import (
     Entity,
     Meta,
@@ -45,8 +46,29 @@ app = FastAPI(
     description="接收中文合同文本，返回识别到的敏感实体列表。",
 )
 
+
+def _build_engine(settings: Settings) -> NerEngine:
+    """根据配置构建引擎；启用 LLM 时注入自托管 LLM 客户端。"""
+    llm_client = None
+    if settings.llm_enabled:
+        llm_client = LlmClient(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            timeout=settings.llm_timeout_seconds,
+            max_chars_per_chunk=settings.llm_max_chars_per_chunk,
+            default_confidence=settings.llm_default_confidence,
+            disable_thinking=settings.llm_disable_thinking,
+            use_json_format=settings.llm_use_json_format,
+            api_style=settings.llm_api_style,
+        )
+        logger.info("LLM 后端已启用: model=%s base=%s",
+                    settings.llm_model, settings.llm_base_url)
+    return NerEngine(model_version=settings.model_version, llm_client=llm_client)
+
+
 _settings = get_settings()
-_engine = NerEngine(model_version=_settings.model_version)
+_engine = _build_engine(_settings)
 _rate_limiter = RateLimiter(_settings.rate_limit_per_minute)
 
 
@@ -121,11 +143,12 @@ async def contract_ner(
         raise InvalidOptionsError("context_window 不能为负数")
 
     try:
-        raw_entities = _engine.analyze(
+        raw_entities, used_mode = _engine.analyze(
             text=text,
             entity_types=opts.entity_types,
             min_confidence=opts.min_confidence,
             context_window=opts.context_window,
+            mode=opts.mode,
         )
     except ApiError:
         raise
@@ -153,5 +176,6 @@ async def contract_ner(
         meta=Meta(
             model_version=settings.model_version,
             processing_time_ms=elapsed_ms,
+            mode=used_mode,
         ),
     )

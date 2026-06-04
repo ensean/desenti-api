@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,8 @@ class NerOptions(BaseModel):
     entity_types: list[str] = Field(default_factory=lambda: ["all"])
     min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     context_window: int = Field(default=100, ge=0, le=2000)
+    # 识别模式：fast=纯规则（默认）；accurate=规则 + LLM
+    mode: Literal["fast", "accurate"] = "fast"
 
 
 class NerRequest(BaseModel):
@@ -66,6 +68,8 @@ class NerData(BaseModel):
 class Meta(BaseModel):
     model_version: str
     processing_time_ms: int
+    # 实际使用的识别模式（请求 accurate 但 LLM 不可用时会降级为 fast）
+    mode: str = "fast"
 
 
 class NerResponse(BaseModel):

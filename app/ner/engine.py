@@ -1,23 +1,29 @@
 """混合 NER 引擎。
 
-策略（见需求第 9 节）：
-  - 强格式实体（信用代码/身份证/手机/邮箱/银行账号）用正则 + 校验，高精度；
-  - 公司名/开户行/地址用正则关键词锚点抽取；
-  - 人名/户名用上下文关键词锚点抽取（避免泛汉字误匹配）；
-  - 角色判定：向前 context_window 字符匹配最近角色关键词（第 4 节）；
-  - context_field：向前匹配最近的字段锚点关键词（第 5 节）。
+两种模式：
+  - fast（默认）：纯规则，毫秒级、确定、零模型依赖。
+  - accurate：规则 + 自托管 LLM（EC2 host）。
 
-该引擎为纯 CPU、无外部模型依赖，可独立运行；如需接入 spaCy /
-BERT / LAC，可在 _extract_model_entities 中扩展并合并结果。
+职责划分：
+  - 强格式实体（信用代码/身份证/手机/邮箱/银行账号）：始终走正则 + 校验，
+    偏移精确、确定，LLM 在此反而更差。
+  - 语义实体（公司名/人名/地址）：fast 用规则锚点；accurate 额外用 LLM
+    提升召回。LLM 只返回实体「值」，字符偏移由本引擎在原文回填，
+    角色/字段优先用基于位置的规则判定，规则判不出时回退到 LLM 的判定。
+  - LLM 不可用（超时/连接失败/解析失败）时自动降级为纯规则，请求不失败。
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
 from . import patterns as P
+from .llm_client import LlmClient, LlmUnavailable
 from .validators import validate_credit_code, validate_id_card
+
+logger = logging.getLogger("desenti.engine")
 
 # 各实体类型在重叠裁决中的优先级（数值越大越优先保留）
 _PRIORITY = {
@@ -43,11 +49,17 @@ class Candidate:
     start: int
     end: int
     confidence: float
+    # 来源："rule"（正则/锚点）或 "llm"
+    source: str = "rule"
+    # LLM 提供的角色/字段，作为基于位置的规则判定失败时的回退
+    llm_role: str | None = None
+    llm_field: str | None = None
 
 
 class NerEngine:
-    def __init__(self, model_version: str = "1.0.0"):
+    def __init__(self, model_version: str = "1.0.0", llm_client: LlmClient | None = None):
         self.model_version = model_version
+        self.llm_client = llm_client
 
     # ------------------------------------------------------------------
     # 公开入口
@@ -58,12 +70,27 @@ class NerEngine:
         entity_types: list[str],
         min_confidence: float,
         context_window: int,
-    ) -> list[dict]:
+        mode: str = "fast",
+    ) -> tuple[list[dict], str]:
+        """识别实体。
+
+        返回 (entities, used_mode)。used_mode 表示实际使用的模式：
+        请求 accurate 但 LLM 不可用时会降级为 "fast"。
+        """
         wanted = self._normalize_wanted(entity_types)
 
         candidates: list[Candidate] = []
         candidates += self._extract_regex_entities(text)
         candidates += self._extract_anchored_entities(text)
+
+        used_mode = "fast"
+        if mode == "accurate" and self.llm_client is not None:
+            try:
+                candidates += self._extract_llm_entities(text)
+                used_mode = "accurate"
+            except LlmUnavailable as exc:
+                logger.warning("LLM 不可用，降级为规则模式: %s", exc)
+                used_mode = "fast"
 
         # 重叠裁决
         resolved = self._resolve_overlaps(candidates)
@@ -75,7 +102,11 @@ class NerEngine:
             if wanted is not None and c.type not in wanted:
                 continue
             role = self._detect_role(text, c.start, context_window)
+            if role == "unknown" and c.llm_role:
+                role = c.llm_role
             context_field = self._detect_context_field(text, c, context_window)
+            if context_field == "其他" and c.llm_field:
+                context_field = c.llm_field
             results.append(
                 {
                     "value": c.value,
@@ -89,7 +120,7 @@ class NerEngine:
             )
 
         results.sort(key=lambda e: e["start"])
-        return results
+        return results, used_mode
 
     # ------------------------------------------------------------------
     # 实体类型过滤
@@ -221,6 +252,48 @@ class NerEngine:
         return None
 
     # ------------------------------------------------------------------
+    # LLM 实体抽取（accurate 模式）+ 偏移回填
+    # ------------------------------------------------------------------
+    def _extract_llm_entities(self, text: str) -> list[Candidate]:
+        """调用 LLM 取语义实体值，再在原文中定位字符偏移。
+
+        LLM 不给偏移，本方法负责把每个 value 回填到原文位置：
+        - 同一 value 出现多次时，依次占用尚未被使用的位置；
+        - value 不在原文中（模型幻觉/改写）则丢弃，保证 start/end 精确。
+        """
+        llm_entities = self.llm_client.extract(text)
+
+        # 记录每个 value 已消费到的搜索起点，处理重复出现
+        search_from: dict[str, int] = {}
+        out: list[Candidate] = []
+        for ent in llm_entities:
+            value = ent["value"]
+            if not value:
+                continue
+            start = text.find(value, search_from.get(value, 0))
+            if start == -1:
+                # 该值未出现在原文（可能是模型改写），尝试从头再找一次
+                start = text.find(value)
+                if start == -1:
+                    logger.debug("丢弃未定位到原文的 LLM 实体: %r", value)
+                    continue
+            end = start + len(value)
+            search_from[value] = end
+            out.append(
+                Candidate(
+                    value=value,
+                    type=ent["type"],
+                    start=start,
+                    end=end,
+                    confidence=ent.get("confidence", 0.9),
+                    source="llm",
+                    llm_role=ent.get("role") or None,
+                    llm_field=ent.get("context_field") or None,
+                )
+            )
+        return out
+
+    # ------------------------------------------------------------------
     # 重叠裁决
     # ------------------------------------------------------------------
     def _resolve_overlaps(self, candidates: list[Candidate]) -> list[Candidate]:
@@ -232,10 +305,13 @@ class NerEngine:
                 unique[key] = c
         items = list(unique.values())
 
-        # 排序：优先级 -> 跨度长度 -> 置信度
+        # 排序：优先级 -> LLM 优先（语义类） -> 跨度长度 -> 置信度
+        # accurate 模式下 LLM 的语义实体跨度更干净（正则常过度捕获前缀），
+        # 故同优先级时优先保留 LLM 候选。
         items.sort(
             key=lambda c: (
                 _PRIORITY.get(c.type, 0),
+                1 if c.source == "llm" else 0,
                 c.end - c.start,
                 c.confidence,
             ),

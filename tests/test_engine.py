@@ -9,12 +9,14 @@ engine = NerEngine()
 
 
 def analyze(text: str, **kw):
-    return engine.analyze(
+    entities, _mode = engine.analyze(
         text=text,
         entity_types=kw.get("entity_types", ["all"]),
         min_confidence=kw.get("min_confidence", 0.7),
         context_window=kw.get("context_window", 100),
+        mode=kw.get("mode", "fast"),
     )
+    return entities
 
 
 def _types(entities):

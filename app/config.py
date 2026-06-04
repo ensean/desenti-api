@@ -35,6 +35,39 @@ class Settings(BaseSettings):
     # NER 默认参数
     default_min_confidence: float = 0.7
     default_context_window: int = 100
+    # 默认识别模式：fast=纯规则；accurate=规则 + LLM
+    default_mode: str = "fast"
+
+    # ---------------- LLM 后端（accurate 模式） ----------------
+    # 是否启用 LLM 后端。关闭时 accurate 模式自动降级为 fast。
+    llm_enabled: bool = False
+    # OpenAI 兼容的 base url。
+    #   Ollama:  http://127.0.0.1:11434/v1
+    #   vLLM:    http://127.0.0.1:8000/v1
+    llm_base_url: str = "http://127.0.0.1:11434/v1"
+    # 部分后端（vLLM/OpenAI 兼容网关）需要 Key；Ollama 可留默认值。
+    llm_api_key: str = "not-needed"
+    # 模型名（EC2 host 上自托管的模型）。中文合同推荐 qwen3.5:9b
+    # （官方 Ollama 库，256K 上下文，中文强）。备选 glm4:9b。
+    llm_model: str = "qwen3.5:9b"
+    # 单次请求超时（秒）。SLA 已放宽，给模型留足生成时间。
+    llm_timeout_seconds: float = 120.0
+    # 单个 LLM 分块最大字符数。qwen3.5 为 256K 上下文，正常 100KB 合同
+    # （中文约 3.3 万字）可一次喂入，无需切块；此值作超长文本兜底。
+    llm_max_chars_per_chunk: int = 40000
+    # LLM 实体的默认置信度（模型未显式给出时）。
+    llm_default_confidence: float = 0.9
+    # API 风格：ollama 用原生 /api/chat（正确支持 think=false，Qwen3.5 必需）；
+    # openai 用 /v1/chat/completions（vLLM 等标准 OpenAI 兼容后端）。
+    llm_api_style: str = "ollama"
+    # 是否禁用思考模式（Qwen3/3.5 thinking）。抽取任务应关闭：
+    # 思考会混入 <think> 块、拖慢生成、干扰 JSON 输出。
+    llm_disable_thinking: bool = True
+    # 是否使用 response_format=json_object 强制 JSON 语法约束。
+    # 默认关闭：在 llama.cpp + 混合架构模型（Qwen3.5）上会触发昂贵的
+    # 语法编译，单次请求延迟从数秒升到 60 秒以上。依赖提示 + 容错解析即可。
+    # 若后端为 vLLM 且模型为标准架构，可开启以提高 JSON 稳定性。
+    llm_use_json_format: bool = False
 
     @property
     def api_key_set(self) -> set[str]:

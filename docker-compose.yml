@@ -8,4 +8,14 @@ services:
       DESENTI_API_KEYS: "${DESENTI_API_KEYS:-change-me-in-production}"
       DESENTI_MODEL_VERSION: "1.0.0"
       DESENTI_RATE_LIMIT_PER_MINUTE: "600"
+      # ---- LLM 后端（accurate 模式）----
+      # 启用后指向 EC2 host 上自托管的 Ollama/vLLM。
+      # 容器访问宿主机 Ollama：http://host.docker.internal:11434/v1
+      DESENTI_LLM_ENABLED: "${DESENTI_LLM_ENABLED:-false}"
+      DESENTI_LLM_BASE_URL: "${DESENTI_LLM_BASE_URL:-http://host.docker.internal:11434/v1}"
+      DESENTI_LLM_MODEL: "${DESENTI_LLM_MODEL:-qwen3.5:9b}"
+      DESENTI_LLM_TIMEOUT_SECONDS: "${DESENTI_LLM_TIMEOUT_SECONDS:-120}"
+    extra_hosts:
+      # 让容器能通过 host.docker.internal 访问宿主机上的 Ollama
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
