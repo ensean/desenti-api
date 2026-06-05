@@ -306,6 +306,96 @@ scripts/           演示与对比脚本
 Dockerfile, docker-compose.yml
 ```
 
+## MCP 接口
+
+[MCP（Model Context Protocol）](https://modelcontextprotocol.io/) 是 Anthropic 推出的开放协议，允许 Claude Desktop、Cursor 等 AI 客户端通过标准化接口调用本地工具。本服务提供 MCP Server，可直接在 Claude Desktop 中对合同文本执行 NER 识别，无需手动调用 REST API。
+
+### 安装依赖
+
+```bash
+pip install -r requirements-mcp.txt
+```
+
+> MCP Server 复用主服务的 NER 引擎，若需 spaCy NER 兜底，还需安装 `requirements-nlp.txt`（可选）。
+
+### 启动方式
+
+```bash
+python -m app.mcp_server
+```
+
+MCP Server 通过 **stdio transport** 运行，由 MCP 客户端（如 Claude Desktop）自动启动和管理进程，无需手动保持运行。
+
+### 可用工具
+
+#### `contract_ner` — 合同实体识别
+
+分析中文合同文本，返回识别到的敏感实体列表及统计信息。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `text` | string | ✅ | — | 合同纯文本内容 |
+| `mode` | string | — | `"fast"` | 识别模式：`fast`（字典+正则+spaCy，毫秒级）或 `accurate`（+LLM，需自托管，秒级） |
+| `entity_types` | string[] | — | `["all"]` | 需要识别的实体类型，`["all"]` 表示全部 |
+| `min_confidence` | float | — | `0.7` | 最低置信度阈值（0.0–1.0） |
+
+返回示例：
+```json
+{
+  "success": true,
+  "data": {
+    "entities": [
+      {
+        "value": "深圳市星幻科技有限公司",
+        "type": "company_name",
+        "role": "party_a",
+        "start": 3,
+        "end": 14,
+        "confidence": 0.9,
+        "context_field": "签约主体"
+      }
+    ],
+    "statistics": { "total_entities": 1, "by_type": { "company_name": 1 } }
+  },
+  "meta": { "model_version": "1.0.0", "mode": "fast" }
+}
+```
+
+#### `list_entity_types` — 查询支持的实体类型
+
+无参数，返回所有支持的实体类型及中文含义。
+
+```json
+{
+  "entity_types": [
+    { "type": "company_name", "description": "公司名称" },
+    { "type": "person_name",  "description": "人名" },
+    ...
+  ]
+}
+```
+
+### Claude Desktop 配置示例
+
+编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或 `%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
+
+```json
+{
+  "mcpServers": {
+    "desenti-ner": {
+      "command": "/path/to/.venv/bin/python",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "/path/to/desenti",
+      "env": {
+        "DESENTI_API_KEYS": "dev-local-key"
+      }
+    }
+  }
+}
+```
+
+将 `/path/to/` 替换为实际路径，重启 Claude Desktop 后即可在对话中使用 `contract_ner` 工具。
+
 ## 安全与部署说明
 
 - 服务本身不实现 TLS。生产环境请置于 HTTPS 反向代理 / API 网关之后（TLS 1.2+），满足需求第 8 节传输安全要求。
