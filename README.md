@@ -308,7 +308,7 @@ Dockerfile, docker-compose.yml
 
 ## MCP 接口
 
-[MCP（Model Context Protocol）](https://modelcontextprotocol.io/) 是 Anthropic 推出的开放协议，允许 Claude Desktop、Cursor 等 AI 客户端通过标准化接口调用本地工具。本服务提供 MCP Server，可直接在 Claude Desktop 中对合同文本执行 NER 识别，无需手动调用 REST API。
+[MCP（Model Context Protocol）](https://modelcontextprotocol.io/) 是 Anthropic 推出的开放协议，允许 Claude Desktop、Cursor 等 AI 客户端通过标准化接口调用远端工具。本服务通过 **Streamable HTTP transport** 暴露 MCP 端点，部署在 GPU 服务器上后可直接被 MCP 客户端访问，无需手动调用 REST API。
 
 ### 安装依赖
 
@@ -318,13 +318,27 @@ pip install -r requirements-mcp.txt
 
 > MCP Server 复用主服务的 NER 引擎，若需 spaCy NER 兜底，还需安装 `requirements-nlp.txt`（可选）。
 
-### 启动方式
+### 部署方式
+
+#### 集成模式（推荐）
+
+MCP 端点随主 FastAPI 服务一同启动，挂载在 `/mcp` 路径：
 
 ```bash
-python -m app.mcp_server
+DESENTI_API_KEYS=demo-key uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-MCP Server 通过 **stdio transport** 运行，由 MCP 客户端（如 Claude Desktop）自动启动和管理进程，无需手动保持运行。
+MCP 端点地址：`http://host:8000/mcp`
+
+#### 独立模式
+
+单独启动 MCP 服务，监听 8001 端口：
+
+```bash
+DESENTI_API_KEYS=demo-key python -m app.mcp_server
+```
+
+MCP 端点地址：`http://host:8001/mcp`
 
 ### 可用工具
 
@@ -334,10 +348,11 @@ MCP Server 通过 **stdio transport** 运行，由 MCP 客户端（如 Claude De
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `text` | string | ✅ | — | 合同纯文本内容 |
+| `text` | string | ✅ | — | 合同纯文本内容（上限 100KB） |
 | `mode` | string | — | `"fast"` | 识别模式：`fast`（字典+正则+spaCy，毫秒级）或 `accurate`（+LLM，需自托管，秒级） |
 | `entity_types` | string[] | — | `["all"]` | 需要识别的实体类型，`["all"]` 表示全部 |
 | `min_confidence` | float | — | `0.7` | 最低置信度阈值（0.0–1.0） |
+| `context_window` | int | — | `100` | 角色判定的上下文窗口字符数（0–2000） |
 
 返回示例：
 ```json
@@ -375,26 +390,23 @@ MCP Server 通过 **stdio transport** 运行，由 MCP 客户端（如 Claude De
 }
 ```
 
-### Claude Desktop 配置示例
+### 客户端配置示例
 
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或 `%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
+支持所有兼容 MCP Streamable HTTP 的客户端（Claude Desktop 1.9+、Cursor、Continue 等）。
+
+编辑客户端配置文件，添加：
 
 ```json
 {
   "mcpServers": {
     "desenti-ner": {
-      "command": "/path/to/.venv/bin/python",
-      "args": ["-m", "app.mcp_server"],
-      "cwd": "/path/to/desenti",
-      "env": {
-        "DESENTI_API_KEYS": "dev-local-key"
-      }
+      "url": "https://your-server.com/mcp"
     }
   }
 }
 ```
 
-将 `/path/to/` 替换为实际路径，重启 Claude Desktop 后即可在对话中使用 `contract_ner` 工具。
+将 `https://your-server.com/mcp` 替换为实际部署地址（集成模式为主服务地址 + `/mcp`，独立模式为 `:8001/mcp`）。重启客户端后即可在对话中使用 `contract_ner` 工具。
 
 ## 安全与部署说明
 

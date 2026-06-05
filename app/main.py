@@ -49,6 +49,10 @@ app = FastAPI(
     description="接收中文合同文本，返回识别到的敏感实体列表。",
 )
 
+# MCP Streamable HTTP — 挂载到 /mcp（延迟导入，避免循环依赖）
+from .mcp_server import mcp_app  # noqa: E402
+app.mount("/mcp", mcp_app)
+
 # CORS：在所有情况下允许任意来源跨域（始终 "*"）。
 # 本服务用 Bearer 头鉴权（非 Cookie），故 allow_credentials=False，
 # 与 "*" 兼容；CORS 仅放开浏览器读取响应，不泄露 API Key。
