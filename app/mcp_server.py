@@ -6,17 +6,15 @@
   2. 独立模式：python -m app.mcp_server，监听 0.0.0.0:8001
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from .config import get_settings
-from .main import _build_engine
+from .factory import _build_engine
 
 logger = logging.getLogger("desenti.mcp")
 
@@ -51,7 +49,7 @@ mcp_app = mcp.streamable_http_app()
 async def contract_ner(
     text: str,
     mode: str = "fast",
-    entity_types: list[str] | None = None,
+    entity_types: Optional[list[str]] = None,
     min_confidence: float = 0.7,
     context_window: int = 100,
 ) -> str:

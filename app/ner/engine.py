@@ -203,8 +203,11 @@ class NerEngine:
             digits = re.sub(r"\s", "", raw)
             if not (12 <= len(digits) <= 19):
                 continue
-            out.append(Candidate(raw.strip(), "bank_account",
-                                  m.start(), m.start() + len(raw.rstrip()), 0.85))
+            stripped = raw.strip()
+            leading_spaces = len(raw) - len(raw.lstrip())
+            actual_start = m.start() + leading_spaces
+            actual_end = actual_start + len(stripped)
+            out.append(Candidate(stripped, "bank_account", actual_start, actual_end, 0.85))
 
         # 公司名称（正则兜底，最弱：易过度捕获，让位于 spaCy/LLM 的干净跨度）
         for m in P.COMPANY_RE.finditer(text):

@@ -17,6 +17,7 @@ import time
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import __version__
 from .auth import RateLimiter, extract_bearer_token, verify_api_key
@@ -28,10 +29,7 @@ from .errors import (
     InvalidOptionsError,
     TextTooLongError,
 )
-from .ner import NerEngine
-from .ner.dict_engine import get_dict
-from .ner.llm_client import LlmClient
-from .ner.spacy_backend import SpacyBackend
+from .factory import _build_engine
 from .schemas import (
     Entity,
     Meta,
@@ -49,9 +47,9 @@ app = FastAPI(
     description="接收中文合同文本，返回识别到的敏感实体列表。",
 )
 
-# MCP Streamable HTTP — 挂载到 /mcp（延迟导入，避免循环依赖）
-from .mcp_server import mcp_app  # noqa: E402
-app.mount("/mcp", mcp_app)
+_settings = get_settings()
+_engine = _build_engine(_settings)
+_rate_limiter = RateLimiter(_settings.rate_limit_per_minute)
 
 # CORS：在所有情况下允许任意来源跨域（始终 "*"）。
 # 本服务用 Bearer 头鉴权（非 Cookie），故 allow_credentials=False，
@@ -66,46 +64,26 @@ app.add_middleware(
 )
 
 
-def _build_engine(settings: Settings) -> NerEngine:
-    """构建引擎：fast=字典+正则+spaCy；启用 LLM 时叠加 accurate。"""
-    # 词典（最高优先级，热更新）
-    sensitive_dict = get_dict(settings.dict_file)
-
-    # spaCy 后端（公司/人名/地址兜底，模型不可用时优雅降级）
-    spacy_backend = None
-    if settings.spacy_enabled:
-        spacy_backend = SpacyBackend(model_name=settings.spacy_model)
-        logger.info("spaCy 后端已配置: model=%s", settings.spacy_model)
-
-    # LLM 后端（accurate 模式，自托管）
-    llm_client = None
-    if settings.llm_enabled:
-        llm_client = LlmClient(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
-            timeout=settings.llm_timeout_seconds,
-            max_chars_per_chunk=settings.llm_max_chars_per_chunk,
-            default_confidence=settings.llm_default_confidence,
-            disable_thinking=settings.llm_disable_thinking,
-            use_json_format=settings.llm_use_json_format,
-            api_style=settings.llm_api_style,
-        )
-        logger.info("LLM 后端已启用: model=%s base=%s",
-                    settings.llm_model, settings.llm_base_url)
-
-    return NerEngine(
-        model_version=settings.model_version,
-        llm_client=llm_client,
-        spacy_backend=spacy_backend,
-        sensitive_dict=sensitive_dict,
-        spacy_confidence=settings.spacy_confidence,
-    )
+class McpAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.url.path.startswith("/mcp"):
+            try:
+                token = extract_bearer_token(request.headers.get("authorization"))
+                verify_api_key(token, _settings)
+                _rate_limiter.check(token)
+            except ApiError as exc:
+                return JSONResponse(
+                    status_code=exc.http_status,
+                    content={"success": False, "error": {"code": exc.code, "message": exc.message}},
+                )
+        return await call_next(request)
 
 
-_settings = get_settings()
-_engine = _build_engine(_settings)
-_rate_limiter = RateLimiter(_settings.rate_limit_per_minute)
+app.add_middleware(McpAuthMiddleware)
+
+# MCP Streamable HTTP — 挂载到 /mcp
+from .mcp_server import mcp_app  # noqa: E402
+app.mount("/mcp", mcp_app)
 
 
 # ----------------------------------------------------------------------------

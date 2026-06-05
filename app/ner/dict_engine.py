@@ -121,15 +121,15 @@ class SensitiveDict:
         return merged
 
 
-_dict_instance: SensitiveDict | None = None
+_dict_instances: dict[str, SensitiveDict] = {}
 _dict_lock = threading.Lock()
 
 
 def get_dict(path: str | Path = "sensitive_dict.txt") -> SensitiveDict:
-    """进程级单例。首次按 path 创建，后续复用。"""
-    global _dict_instance
-    if _dict_instance is None:
+    """按 path 缓存的实例。不同路径返回独立实例，相同路径复用。"""
+    key = str(Path(path).resolve())
+    if key not in _dict_instances:
         with _dict_lock:
-            if _dict_instance is None:
-                _dict_instance = SensitiveDict(path)
-    return _dict_instance
+            if key not in _dict_instances:
+                _dict_instances[key] = SensitiveDict(path)
+    return _dict_instances[key]
