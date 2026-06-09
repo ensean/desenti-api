@@ -1,8 +1,12 @@
 FROM python:3.12-slim
 
-# 不写 .pyc、日志直输出
+# 不写 .pyc、日志直输出；关闭 pip 进度条线程（规避受限环境下
+# "can't start new thread"：pip 的 rich 进度条会额外起线程，触发 PID/线程上限）
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_PROGRESS_BAR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_INPUT=1
 
 WORKDIR /app
 

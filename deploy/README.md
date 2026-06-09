@@ -24,9 +24,54 @@ ENABLE_ADMIN=1 ./deploy/deploy.sh     # 同时启用 /admin（自动生成管理
 - 健康检查后输出访问地址。
 
 可配置环境变量：`IMAGE` `CONTAINER` `PORT` `WITH_SPACY` `SPACY_MODEL`
-`ENABLE_ADMIN` `INSTALL_DOCKER`。
+`ENABLE_ADMIN` `INSTALL_DOCKER` `SECCOMP_UNCONFINED`。
 
 > 暴露到公网仍需在前面加 CloudFront（见下文），脚本只负责把服务在主机上跑起来。
+
+### 推荐主机环境
+
+关键不是 Ubuntu 版本本身，而是 **Docker ≥ 20.10**——它的新 seccomp 配置才放行
+现代 glibc 用的 `clone3()`，否则会撞到下方「旧版 Docker」的一堆坑。
+
+| 场景 | 推荐 |
+|------|------|
+| 通用 / fast 模式 | **Ubuntu 24.04 LTS**（首选）或 22.04 LTS；支持期内、内核与 Docker 都够新 |
+| GPU / accurate 模式（AWS） | **AWS Deep Learning AMI（Amazon Linux 2023）**：NVIDIA 驱动 + 新 Docker 预装，开箱即用 |
+| 避免 | EOL 系统（16.04/18.04）、非 LTS interim 版 |
+
+装 Docker 建议用官方源拿最新引擎（而非发行版自带的旧 `docker.io`）：
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"   # 之后免 sudo（重新登录生效）
+```
+
+满足上述环境时，直接 `./deploy/deploy.sh` 即可跑完整 spaCy 模式，无需任何兼容开关。
+
+### 旧版 Docker / EOL 系统的主机
+
+现代 OS + Docker 20.10+（推荐，如 AL2023 / Ubuntu 22.04+）可直接用上面的命令，
+含 spaCy 的完整 fast 模式开箱即用。
+
+但**旧主机**（如 Ubuntu 16.04 + Docker 18.09）有两个已知坑，均源于过时的
+seccomp 配置拦截了现代 glibc 用的 `clone3()` 系统调用：
+
+- 构建时装 spaCy/torch、或运行时创建线程都会报 `can't start new thread`；
+- uvloop 在老内核上还可能段错误（exit 139）。
+
+对这类主机：
+
+```bash
+WITH_SPACY=0 SECCOMP_UNCONFINED=1 ./deploy/deploy.sh
+```
+
+- `SECCOMP_UNCONFINED=1` 给容器加 `--security-opt seccomp=unconfined` 放行 `clone3`，
+  一并解决线程与 uvloop 段错误（代价：容器隔离强度降低，仅旧主机使用）。
+- `WITH_SPACY=0`：旧版 legacy builder 无法在构建期放行 seccomp，spaCy 模型
+  下载会失败，故旧主机只能跑「字典 + 正则」（fast 自动降级，功能正常）。
+
+**建议**：spaCy/LLM 这类 ML 依赖应跑在现代 OS + 较新 Docker 上。EOL 系统
+（如 16.04）只适合跑轻量「字典 + 正则」模式。
 
 ## 拓扑
 

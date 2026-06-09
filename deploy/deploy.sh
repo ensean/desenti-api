@@ -10,6 +10,9 @@
 #     WITH_SPACY=0 ./deploy/deploy.sh         # 轻量：仅字典+正则
 #     SPACY_MODEL=zh_core_web_sm ./deploy/deploy.sh   # 轻量 spaCy 模型
 #     ENABLE_ADMIN=1 ./deploy/deploy.sh       # 启用 /admin（自动生成管理令牌）
+#     WITH_SPACY=0 SECCOMP_UNCONFINED=1 ./deploy/deploy.sh  # 旧版 Docker 主机
+#                                             #   （如 Ubuntu 16.04 / Docker 18.09）：
+#                                             #   关 spaCy + 关 seccomp 放行 clone3
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
@@ -22,6 +25,9 @@ WITH_SPACY="${WITH_SPACY:-1}"               # 1=构建时装入 spaCy；0=仅字
 SPACY_MODEL="${SPACY_MODEL:-zh_core_web_trf}"
 ENABLE_ADMIN="${ENABLE_ADMIN:-0}"           # 1=启用 /admin 并生成管理令牌
 INSTALL_DOCKER="${INSTALL_DOCKER:-0}"       # 1=缺少 Docker 时尝试自动安装
+SECCOMP_UNCONFINED="${SECCOMP_UNCONFINED:-0}"  # 1=容器关 seccomp（旧版 Docker，
+                                            #   其老 seccomp 配置会拦截 clone3，
+                                            #   导致建镜像/运行时 "can't start new thread"）
 
 # 定位项目根目录（脚本位于 <root>/deploy/）
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -99,12 +105,25 @@ $DOCKER build \
 touch "$KEYS_FILE"
 DICT_FILE="$ROOT/sensitive_dict.txt"
 touch "$DICT_FILE"
+
+# host.docker.internal:host-gateway 需 Docker 20.10+，且仅在容器需访问宿主机
+# Ollama（LLM 启用）时有用。LLM 关闭时跳过，避免在旧版 Docker 上 run 失败。
+RUN_ARGS=()
+if grep -qE '^DESENTI_LLM_ENABLED=true' "$ENV_FILE"; then
+  RUN_ARGS+=(--add-host host.docker.internal:host-gateway)
+fi
+# 旧版 Docker（如 18.09）的 seccomp 配置拦截 clone3，致线程无法创建。
+# 关闭容器 seccomp 过滤即可放行（注意：降低了容器隔离强度，仅用于旧主机）。
+if [ "$SECCOMP_UNCONFINED" = "1" ]; then
+  RUN_ARGS+=(--security-opt seccomp=unconfined)
+fi
+
 log "重启容器 $CONTAINER …"
 $DOCKER rm -f "$CONTAINER" >/dev/null 2>&1 || true
 $DOCKER run -d \
   --name "$CONTAINER" \
   -p "$PORT:8000" \
-  --add-host host.docker.internal:host-gateway \
+  ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} \
   --env-file "$ENV_FILE" \
   -v "$KEYS_FILE:/app/api_keys.txt" \
   -v "$DICT_FILE:/app/sensitive_dict.txt" \
