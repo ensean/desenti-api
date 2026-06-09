@@ -87,9 +87,14 @@ if [ ! -f "$ENV_FILE" ]; then
   log "生成的 API Key：$API_KEY"
 else
   log "复用已有 .env（不覆盖业务配置）。如需改 Key 请手动编辑。"
-  # 迁移旧版相对路径 -> /data（早期版本把数据文件挂在 /app，非 root 用户不可写）
-  sed -i -E 's#^DESENTI_API_KEYS_FILE=(api_keys\.txt)$#DESENTI_API_KEYS_FILE=/data/api_keys.txt#' "$ENV_FILE"
-  sed -i -E 's#^DESENTI_DICT_FILE=(sensitive_dict\.txt)$#DESENTI_DICT_FILE=/data/sensitive_dict.txt#' "$ENV_FILE"
+  # 迁移：把任何现有的 DESENTI_API_KEYS_FILE / DESENTI_DICT_FILE 值统一
+  # 改为容器内 /data/ 绝对路径（无论旧值是相对路径、/app/… 还是其他），
+  # 保证与容器的 -v DATA_DIR:/data 挂载对应。
+  sed -i -E 's#^(DESENTI_API_KEYS_FILE)=.*#\1=/data/api_keys.txt#' "$ENV_FILE"
+  sed -i -E 's#^(DESENTI_DICT_FILE)=.*#\1=/data/sensitive_dict.txt#' "$ENV_FILE"
+  # 如果旧 .env 完全缺少这两项，补上
+  grep -q '^DESENTI_API_KEYS_FILE=' "$ENV_FILE" || echo 'DESENTI_API_KEYS_FILE=/data/api_keys.txt' >> "$ENV_FILE"
+  grep -q '^DESENTI_DICT_FILE='     "$ENV_FILE" || echo 'DESENTI_DICT_FILE=/data/sensitive_dict.txt'  >> "$ENV_FILE"
 fi
 
 # 管理令牌：幂等处理，无论 .env 是新建还是已存在均适用。
@@ -119,13 +124,21 @@ $DOCKER build \
 # ----------------------------------------------------------------------------
 # 4) 重建容器（从 .env 读取配置；挂载 data 目录以持久化管理页面的改动）
 # ----------------------------------------------------------------------------
-# 准备可写数据目录：种子词典（沿用仓库内容）+ 受管 Key 文件
+# 准备可写数据目录。迁移旧部署可能遗留在 $ROOT 根目录下的文件到 $DATA_DIR。
 mkdir -p "$DATA_DIR"
+for _fname in sensitive_dict.txt api_keys.txt; do
+  _src="$ROOT/$_fname"
+  _dst="$DATA_DIR/$_fname"
+  if [ ! -f "$_dst" ] && [ -f "$_src" ]; then
+    cp "$_src" "$_dst"
+    log "迁移 $ROOT/$_fname → $DATA_DIR/$_fname"
+  fi
+done
+# 首次部署：用仓库内的词典作为种子
 if [ ! -f "$DICT_FILE" ] && [ -f "$ROOT/sensitive_dict.txt" ]; then
   cp "$ROOT/sensitive_dict.txt" "$DICT_FILE"
 fi
 touch "$DICT_FILE" "$KEYS_FILE"
-
 # 以宿主调用用户的 uid:gid 运行容器，使其能写挂载进来的 data 目录
 # （目录归该用户所有，无需 chown/root；规避非 root 容器用户无写权限的问题）。
 RUN_ARGS=(--user "$(id -u):$(id -g)")
