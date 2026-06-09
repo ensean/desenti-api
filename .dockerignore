@@ -9,3 +9,4 @@ tests/
 scripts/
 .env
 *.md
+data/

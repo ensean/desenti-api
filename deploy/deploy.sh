@@ -33,7 +33,11 @@ SECCOMP_UNCONFINED="${SECCOMP_UNCONFINED:-0}"  # 1=容器关 seccomp（旧版 Do
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 ENV_FILE="$ROOT/.env"
-KEYS_FILE="$ROOT/api_keys.txt"
+# 可写数据目录：词典与受管 Key（管理页面热写入）。挂载为容器内 /data。
+# 用目录挂载（而非单文件），原子写入的临时文件 + os.replace 才能在其中完成。
+DATA_DIR="$ROOT/data"
+KEYS_FILE="$DATA_DIR/api_keys.txt"
+DICT_FILE="$DATA_DIR/sensitive_dict.txt"
 
 log() { printf '\033[1;34m[deploy]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
@@ -72,22 +76,35 @@ if [ ! -f "$ENV_FILE" ]; then
   API_KEY="key-$(gen_secret)"
   {
     echo "DESENTI_API_KEYS=$API_KEY"
-    echo "DESENTI_API_KEYS_FILE=api_keys.txt"
-    echo "DESENTI_DICT_FILE=sensitive_dict.txt"
+    echo "DESENTI_API_KEYS_FILE=/data/api_keys.txt"
+    echo "DESENTI_DICT_FILE=/data/sensitive_dict.txt"
     echo "DESENTI_SPACY_ENABLED=$([ "$WITH_SPACY" = "1" ] && echo true || echo false)"
     echo "DESENTI_SPACY_MODEL=$SPACY_MODEL"
     echo "DESENTI_LLM_ENABLED=false"
   } > "$ENV_FILE"
-  if [ "$ENABLE_ADMIN" = "1" ]; then
-    ADMIN_TOKEN="$(gen_secret)"
-    echo "DESENTI_ADMIN_TOKEN=$ADMIN_TOKEN" >> "$ENV_FILE"
-  fi
   chmod 600 "$ENV_FILE"
   log "已写入 $ENV_FILE（权限 600）"
   log "生成的 API Key：$API_KEY"
-  [ "$ENABLE_ADMIN" = "1" ] && log "生成的管理令牌：$ADMIN_TOKEN"
 else
-  log "复用已有 .env（不覆盖）。如需改 Key/令牌请手动编辑。"
+  log "复用已有 .env（不覆盖业务配置）。如需改 Key 请手动编辑。"
+  # 迁移旧版相对路径 -> /data（早期版本把数据文件挂在 /app，非 root 用户不可写）
+  sed -i -E 's#^DESENTI_API_KEYS_FILE=(api_keys\.txt)$#DESENTI_API_KEYS_FILE=/data/api_keys.txt#' "$ENV_FILE"
+  sed -i -E 's#^DESENTI_DICT_FILE=(sensitive_dict\.txt)$#DESENTI_DICT_FILE=/data/sensitive_dict.txt#' "$ENV_FILE"
+fi
+
+# 管理令牌：幂等处理，无论 .env 是新建还是已存在均适用。
+# ENABLE_ADMIN=1 且尚无令牌 -> 生成并追加；已有令牌则不动。
+if [ "$ENABLE_ADMIN" = "1" ]; then
+  if grep -q "^DESENTI_ADMIN_TOKEN=." "$ENV_FILE"; then
+    log "管理令牌已存在于 .env，保持不变。"
+  else
+    ADMIN_TOKEN="$(gen_secret)"
+    # 先删可能存在的空值行，再追加，避免重复键
+    sed -i '/^DESENTI_ADMIN_TOKEN=$/d' "$ENV_FILE"
+    echo "DESENTI_ADMIN_TOKEN=$ADMIN_TOKEN" >> "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    log "已启用管理页面，生成的管理令牌：$ADMIN_TOKEN"
+  fi
 fi
 
 # ----------------------------------------------------------------------------
@@ -100,15 +117,18 @@ $DOCKER build \
   -t "$IMAGE" .
 
 # ----------------------------------------------------------------------------
-# 4) 重建容器（从 .env 读取配置；挂载词典与 Key 文件以持久化管理页面的改动）
+# 4) 重建容器（从 .env 读取配置；挂载 data 目录以持久化管理页面的改动）
 # ----------------------------------------------------------------------------
-touch "$KEYS_FILE"
-DICT_FILE="$ROOT/sensitive_dict.txt"
-touch "$DICT_FILE"
+# 准备可写数据目录：种子词典（沿用仓库内容）+ 受管 Key 文件
+mkdir -p "$DATA_DIR"
+if [ ! -f "$DICT_FILE" ] && [ -f "$ROOT/sensitive_dict.txt" ]; then
+  cp "$ROOT/sensitive_dict.txt" "$DICT_FILE"
+fi
+touch "$DICT_FILE" "$KEYS_FILE"
 
-# host.docker.internal:host-gateway 需 Docker 20.10+，且仅在容器需访问宿主机
-# Ollama（LLM 启用）时有用。LLM 关闭时跳过，避免在旧版 Docker 上 run 失败。
-RUN_ARGS=()
+# 以宿主调用用户的 uid:gid 运行容器，使其能写挂载进来的 data 目录
+# （目录归该用户所有，无需 chown/root；规避非 root 容器用户无写权限的问题）。
+RUN_ARGS=(--user "$(id -u):$(id -g)")
 if grep -qE '^DESENTI_LLM_ENABLED=true' "$ENV_FILE"; then
   RUN_ARGS+=(--add-host host.docker.internal:host-gateway)
 fi
@@ -125,8 +145,7 @@ $DOCKER run -d \
   -p "$PORT:8000" \
   ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} \
   --env-file "$ENV_FILE" \
-  -v "$KEYS_FILE:/app/api_keys.txt" \
-  -v "$DICT_FILE:/app/sensitive_dict.txt" \
+  -v "$DATA_DIR:/data" \
   --restart unless-stopped \
   "$IMAGE" >/dev/null
 

@@ -27,12 +27,20 @@ RUN if [ "$WITH_SPACY" = "1" ]; then \
     fi
 ENV DESENTI_SPACY_MODEL=${SPACY_MODEL}
 
-# 复制应用代码与词典
+# 复制应用代码
 COPY app ./app
-COPY sensitive_dict.txt ./sensitive_dict.txt
 
-# 以非 root 用户运行
-RUN useradd --create-home --uid 10001 appuser
+# 可写数据目录：词典与受管 Key（管理页面热写入）。放入种子词典，
+# 默认路径指向 /data。deploy.sh 会把宿主 data 目录挂载到此处持久化。
+RUN mkdir -p /data
+COPY sensitive_dict.txt /data/sensitive_dict.txt
+ENV DESENTI_DICT_FILE=/data/sensitive_dict.txt \
+    DESENTI_API_KEYS_FILE=/data/api_keys.txt
+
+# 以非 root 用户运行；/data 归该用户，便于无挂载时也可写
+RUN useradd --create-home --uid 10001 appuser \
+    && touch /data/api_keys.txt \
+    && chown -R appuser:appuser /data
 USER appuser
 
 EXPOSE 8000
