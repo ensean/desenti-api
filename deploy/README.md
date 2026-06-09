@@ -4,6 +4,30 @@
 这些是「某次部署的活值」，会随 stop/start、重建而变化，应记录在实例本地
 （`~/desenti-api/.env`，不入库）或私有运维记录中，不要写进仓库。
 
+## 一键部署（Linux 主机）
+
+在主机上克隆/同步本项目后，于项目根目录运行：
+
+```bash
+./deploy/deploy.sh                    # 含 spaCy(trf) 的完整 fast 模式
+WITH_SPACY=0 ./deploy/deploy.sh       # 轻量：仅字典 + 正则
+SPACY_MODEL=zh_core_web_sm ./deploy/deploy.sh   # 轻量 spaCy 模型
+ENABLE_ADMIN=1 ./deploy/deploy.sh     # 同时启用 /admin（自动生成管理令牌）
+```
+
+脚本是**幂等**的（可重复运行以更新：重建镜像 + 重启容器），会：
+- 预检 Docker（缺失时 `INSTALL_DOCKER=1` 可尝试自动安装）；
+- 首次运行生成 `.env` 与随机 API Key（权限 600，不入库），并打印 Key；
+- 用 build arg 决定是否装入 spaCy 模型；
+- 以 `--env-file` 启动容器，挂载 `api_keys.txt` 与 `sensitive_dict.txt`
+  到持久路径，使管理页面的改动在容器重建后保留；
+- 健康检查后输出访问地址。
+
+可配置环境变量：`IMAGE` `CONTAINER` `PORT` `WITH_SPACY` `SPACY_MODEL`
+`ENABLE_ADMIN` `INSTALL_DOCKER`。
+
+> 暴露到公网仍需在前面加 CloudFront（见下文），脚本只负责把服务在主机上跑起来。
+
 ## 拓扑
 
 ```
