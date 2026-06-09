@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .admin import router as admin_router
 from .auth import RateLimiter, extract_bearer_token, verify_api_key
 from .config import Settings, get_settings
 from .errors import (
@@ -28,6 +29,7 @@ from .errors import (
     InvalidOptionsError,
     TextTooLongError,
 )
+from .key_store import get_key_store
 from .ner import NerEngine
 from .ner.dict_engine import get_dict
 from .ner.llm_client import LlmClient
@@ -103,6 +105,9 @@ _settings = get_settings()
 _engine = _build_engine(_settings)
 _rate_limiter = RateLimiter(_settings.rate_limit_per_minute)
 
+# 管理页面与接口（/admin）。未设 DESENTI_ADMIN_TOKEN 时其内部自禁用（404）。
+app.include_router(admin_router)
+
 
 # ----------------------------------------------------------------------------
 # 统一错误处理
@@ -139,7 +144,8 @@ async def authenticate(
     settings: Settings = Depends(get_settings),
 ) -> str:
     token = extract_bearer_token(authorization)
-    key = verify_api_key(token, settings)
+    managed = set(get_key_store(settings.api_keys_file).keys())
+    key = verify_api_key(token, settings, extra_keys=managed)
     _rate_limiter.check(key)
     return key
 

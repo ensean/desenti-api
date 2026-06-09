@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>敏感信息识别 API · 管理</title>
+<style>
+  :root { --bd:#d0d7de; --fg:#1f2328; --muted:#656d76; --accent:#0969da; --bg:#f6f8fa; --danger:#cf222e; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; color: var(--fg); margin: 0; background: var(--bg); }
+  header { background:#fff; border-bottom:1px solid var(--bd); padding:14px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  main { max-width: 860px; margin: 20px auto; padding: 0 16px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:8px; padding:16px; margin-bottom:18px; }
+  .card h2 { font-size:14px; margin:0 0 12px; }
+  label { font-size:13px; color:var(--muted); }
+  input[type=text], input[type=password], textarea { width:100%; padding:8px 10px; border:1px solid var(--bd); border-radius:6px; font-size:13px; font-family:inherit; }
+  textarea { min-height:280px; font-family: ui-monospace, Menlo, Consolas, monospace; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:7px 14px; font-size:13px; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--fg); border:1px solid var(--bd); }
+  button.danger { background:#fff; color:var(--danger); border:1px solid var(--bd); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--bd); }
+  code { background:var(--bg); padding:1px 5px; border-radius:4px; font-family: ui-monospace, monospace; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:10px; background:var(--bg); border:1px solid var(--bd); color:var(--muted); }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#1f2328; color:#fff; padding:10px 16px; border-radius:6px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%; }
+  .toast.show { opacity:.95; }
+  .keybox { background:#fff7e6; border:1px solid #f0c36d; border-radius:6px; padding:10px; margin-top:10px; font-size:13px; word-break:break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1>敏感信息识别 API · 管理</h1>
+  <span class="muted">敏感词典 &amp; API Key 维护</span>
+  <span style="flex:1"></span>
+  <label>管理令牌</label>
+  <input type="password" id="token" placeholder="X-Admin-Token" style="width:220px" autocomplete="off" />
+  <button class="secondary" onclick="saveToken()">使用</button>
+</header>
+
+<main>
+  <div class="card">
+    <h2>API Key</h2>
+    <div class="muted" style="margin-bottom:10px">引导 Key（env）只读；受管 Key 可增删。新增的完整 Key 仅显示一次，请立即保存。</div>
+    <div class="row" style="margin-bottom:12px">
+      <input type="text" id="prefix" placeholder="新 Key 前缀（如 quick）" style="width:200px" value="key" />
+      <button onclick="addKey()">生成新 Key</button>
+    </div>
+    <div id="newkey"></div>
+    <table>
+      <thead><tr><th>Key</th><th>来源</th><th style="width:80px"></th></tr></thead>
+      <tbody id="keys"><tr><td colspan="3" class="muted">输入令牌后加载…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>敏感词典 <span class="muted" id="dictpath"></span></h2>
+    <div class="muted" style="margin-bottom:8px">
+      <code>[company_name]</code> 等段头指定类型，每行一个词条，<code>#</code> 为注释。保存后热更新生效。
+    </div>
+    <textarea id="dict" placeholder="输入令牌后加载…" spellcheck="false"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button onclick="saveDict()">保存词典</button>
+      <button class="secondary" onclick="loadDict()">重新加载</button>
+      <span class="muted" id="dictstatus"></span>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function token() { return sessionStorage.getItem("admin_token") || ""; }
+function saveToken() {
+  sessionStorage.setItem("admin_token", $("token").value.trim());
+  toast("令牌已设置");
+  refresh();
+}
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+async function api(method, path, body) {
+  const opt = { method, headers: { "X-Admin-Token": token() } };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  if (r.status === 401) { toast("令牌无效"); throw new Error("unauthorized"); }
+  if (r.status === 404) { toast("管理功能未启用（未设置 DESENTI_ADMIN_TOKEN）"); throw new Error("disabled"); }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); toast("错误：" + (e.detail || r.status)); throw new Error("http " + r.status); }
+  return r.json();
+}
+
+async function loadKeys() {
+  try {
+    const data = await api("GET", "/admin/api/keys");
+    const rows = data.keys.map(k => `
+      <tr>
+        <td><code>${k.masked}</code></td>
+        <td><span class="tag">${k.source === "bootstrap" ? "引导(env)" : "受管"}</span></td>
+        <td>${k.removable ? `<button class="danger" onclick="delKey('${k.value}')">删除</button>` : ""}</td>
+      </tr>`).join("");
+    $("keys").innerHTML = rows || `<tr><td colspan="3" class="muted">暂无 Key</td></tr>`;
+  } catch (e) { $("keys").innerHTML = `<tr><td colspan="3" class="muted">加载失败</td></tr>`; }
+}
+async function addKey() {
+  const prefix = $("prefix").value.trim() || "key";
+  try {
+    const data = await api("POST", "/admin/api/keys", { prefix });
+    $("newkey").innerHTML = `<div class="keybox">新 Key（仅此一次显示，请立即保存）：<br><code>${data.key}</code></div>`;
+    toast("已生成");
+    loadKeys();
+  } catch (e) {}
+}
+async function delKey(key) {
+  if (!confirm("确认删除该 Key？使用它的调用方将立即失效。")) return;
+  try { await api("DELETE", "/admin/api/keys?key=" + encodeURIComponent(key)); toast("已删除"); loadKeys(); } catch (e) {}
+}
+
+async function loadDict() {
+  try {
+    const data = await api("GET", "/admin/api/dict");
+    $("dict").value = data.content;
+    $("dictpath").textContent = data.path;
+  } catch (e) {}
+}
+async function saveDict() {
+  try {
+    const data = await api("PUT", "/admin/api/dict", { content: $("dict").value });
+    $("dictstatus").textContent = "已保存 " + data.bytes + " 字节，热更新生效";
+    toast("词典已保存");
+  } catch (e) {}
+}
+
+function refresh() { if (token()) { loadKeys(); loadDict(); } }
+window.addEventListener("load", () => { $("token").value = token(); refresh(); });
+</script>
+</body>
+</html>

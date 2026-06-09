@@ -115,7 +115,9 @@ DESENTI_API_KEYS=demo-key ./.venv/bin/uvicorn app.main:app --port 8077 &
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `DESENTI_API_KEYS` | `dev-local-key` | 合法 API Key，逗号分隔 |
+| `DESENTI_API_KEYS` | `dev-local-key` | 合法 API Key（引导 Key），逗号分隔 |
+| `DESENTI_API_KEYS_FILE` | `api_keys.txt` | 受管 Key 文件（管理页面增删，与引导 Key 并集生效） |
+| `DESENTI_ADMIN_TOKEN` | （空） | 管理页面令牌；留空则 `/admin` 禁用（404） |
 | `DESENTI_MODEL_VERSION` | `1.0.0` | 响应 meta 中的模型版本 |
 | `DESENTI_MAX_TEXT_BYTES` | `102400` | 文本上限（UTF-8 字节，100KB） |
 | `DESENTI_RATE_LIMIT_PER_MINUTE` | `600` | 每 Key 每分钟请求上限（≥10 QPS） |
@@ -128,6 +130,30 @@ DESENTI_API_KEYS=demo-key ./.venv/bin/uvicorn app.main:app --port 8077 &
 | `DESENTI_LLM_MODEL` | `qwen3.5:9b` | 自托管模型名（256K 上下文） |
 | `DESENTI_LLM_TIMEOUT_SECONDS` | `120` | LLM 单次请求超时 |
 | `DESENTI_LLM_DISABLE_THINKING` | `true` | 关闭思考模式（抽取任务推荐） |
+
+## 管理页面（/admin）
+
+简单的 Web 管理页,用于维护**敏感词典**与 **API Key**:
+
+```bash
+# 必须设置管理令牌才会启用（留空则 /admin 返回 404）
+export DESENTI_ADMIN_TOKEN=$(openssl rand -hex 24)
+DESENTI_API_KEYS=demo-key ./.venv/bin/uvicorn app.main:app --port 8000
+# 浏览器打开 http://127.0.0.1:8000/admin ，填入上面的令牌
+```
+
+能力:
+- **敏感词典**:在线编辑 `sensitive_dict.txt`,保存即热更新(无需重启)。
+- **API Key**:列出现有 Key(脱敏显示);生成新的受管 Key(完整值仅显示一次);删除受管 Key。
+  引导 Key(来自 `DESENTI_API_KEYS`)只读,不可经页面删除。受管 Key 落盘到
+  `DESENTI_API_KEYS_FILE`,与引导 Key 并集参与鉴权。
+
+安全:
+- 所有管理接口需 `X-Admin-Token` 头(与 `DESENTI_ADMIN_TOKEN` 常量时间比较);未设令牌则整体禁用。
+- 管理功能权限高(可签发 Key、改检测规则),**不要把 `/admin` 暴露给公网**——
+  建议在 CloudFront/网关层按路径或来源限制,或仅经内网/SSH 隧道访问。
+- 受管 Key 文件含明文 Key,已在 `.gitignore` 中,且容器内应挂载到持久卷
+  (否则容器重建后受管 Key 丢失)。
 
 复制 `.env.example` 为 `.env` 进行本地配置。**切勿提交真实密钥。**
 
@@ -291,6 +317,10 @@ app/
   schemas.py       Pydantic 请求/响应模型
   auth.py          Bearer 认证 + 内存限流
   errors.py        错误码与异常
+  admin.py         管理页面后端（词典 / API Key 维护，令牌保护）
+  key_store.py     运行时受管 API Key 存储（文件后端，热更新）
+  static/
+    admin.html     管理页面（敏感词典 + API Key）
   ner/
     engine.py        混合 NER 引擎（编排、级联、重叠裁决、角色/字段、偏移回填）
     dict_engine.py   词典匹配（最高优先级，热更新）

@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     # 默认提供一个开发用 Key，生产环境必须通过 DESENTI_API_KEYS 覆盖。
     api_keys: str = "dev-local-key"
 
+    # 运行时可管理的 API Key 文件（管理页面增删的 Key 落盘于此）。
+    # 鉴权时此文件中的 Key 与上面 env 中的 Key（引导 Key）并集生效。
+    # 注意：容器内此路径需挂载到持久卷，否则容器重建后管理新增的 Key 丢失。
+    api_keys_file: str = "api_keys.txt"
+
+    # 管理页面（/admin）令牌。**留空则管理功能完全禁用**（返回 404）。
+    # 管理页面可增删 Key、编辑敏感词典，务必设为强随机值且妥善保管。
+    admin_token: str = ""
+
     # 文本限制：100KB（按 UTF-8 字节计）
     max_text_bytes: int = 100 * 1024
 

@@ -8,3 +8,7 @@ venv/
 .coverage
 htmlcov/
 .DS_Store
+.vscode/
+
+# 运行时受管 API Key（管理页面写入），不入库
+api_keys.txt

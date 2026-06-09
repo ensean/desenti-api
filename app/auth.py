@@ -24,8 +24,12 @@ def extract_bearer_token(authorization: str | None) -> str:
     return parts[1].strip()
 
 
-def verify_api_key(token: str, settings: Settings) -> str:
-    if token not in settings.api_key_set:
+def verify_api_key(token: str, settings: Settings, extra_keys: set[str] | None = None) -> str:
+    """校验 Key：env 引导 Key 与受管 Key（extra_keys）的并集。"""
+    valid = settings.api_key_set
+    if extra_keys:
+        valid = valid | extra_keys
+    if token not in valid:
         raise AuthFailedError("API Key 无效")
     return token
 
